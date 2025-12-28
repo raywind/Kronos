@@ -2,6 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import sys
 import akshare as ak
+import yfinance as yf
 from datetime import datetime, timedelta
 sys.path.append("../")
 from model import Kronos, KronosTokenizer, KronosPredictor
@@ -9,6 +10,141 @@ from model import Kronos, KronosTokenizer, KronosPredictor
 # 设置 matplotlib 支持中文显示
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']  # 用来正常显示中文标签
 plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
+
+
+def get_bitcoin_data(period="daily", days=500):
+    """
+    使用yfinance获取比特币数据
+    
+    参数:
+        period: 数据周期，"daily" 表示日线
+        days: 获取最近多少天的数据
+    
+    返回:
+        处理后的DataFrame，包含 open, high, low, close, volume, amount, timestamps 列
+    """
+    import time
+    
+    try:
+        print(f"正在获取比特币 (BTC-USD) 的数据...")
+        
+        # 计算日期范围
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+        print(f"日期范围: {start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')}")
+        
+        # 使用yfinance获取比特币数据（带重试机制）
+        max_retries = 3
+        crypto_data = None
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                # yfinance获取比特币数据，使用BTC-USD交易对
+                ticker = yf.Ticker("BTC-USD")
+                
+                if period == "daily":
+                    # 获取日线数据
+                    crypto_data = ticker.history(start=start_date, end=end_date, interval="1d")
+                else:
+                    # 分钟级数据
+                    minutes = int(period)
+                    if minutes >= 60:
+                        interval = f"{minutes//60}h"
+                    else:
+                        interval = f"{minutes}m"
+                    crypto_data = ticker.history(start=start_date, end=end_date, interval=interval)
+                
+                if crypto_data is not None and not crypto_data.empty:
+                    break
+            except Exception as e:
+                print(f"⚠️ 尝试 {attempt}/{max_retries} 失败: {e}")
+                if attempt < max_retries:
+                    time.sleep(1.5)
+                else:
+                    raise
+        
+        if crypto_data is None or crypto_data.empty:
+            raise ValueError("未能获取到比特币数据，请检查网络连接。")
+        
+        # yfinance返回的数据列名是英文的，索引是DatetimeIndex
+        # 将索引转换为timestamps列
+        crypto_data = crypto_data.reset_index()
+        # yfinance返回的索引列名可能是 'Date' 或其他
+        if 'Date' in crypto_data.columns:
+            crypto_data['timestamps'] = crypto_data['Date']
+        elif 'Datetime' in crypto_data.columns:
+            crypto_data['timestamps'] = crypto_data['Datetime']
+        else:
+            # 如果没有找到日期列，使用索引
+            crypto_data['timestamps'] = crypto_data.index
+        
+        # 处理时间戳并转换为UTC时间
+        crypto_data['timestamps'] = pd.to_datetime(crypto_data['timestamps'])
+        # yfinance返回的时间戳通常没有时区信息，假设是UTC时间
+        if crypto_data['timestamps'].dt.tz is None:
+            crypto_data['timestamps'] = crypto_data['timestamps'].dt.tz_localize('UTC')
+        else:
+            crypto_data['timestamps'] = crypto_data['timestamps'].dt.tz_convert('UTC')
+        
+        # yfinance的列名已经是英文：Open, High, Low, Close, Volume
+        # 转换为小写
+        column_mapping = {
+            'Open': 'open',
+            'High': 'high',
+            'Low': 'low',
+            'Close': 'close',
+            'Volume': 'volume'
+        }
+        crypto_data = crypto_data.rename(columns=column_mapping)
+        
+        # 按时间排序
+        crypto_data = crypto_data.sort_values('timestamps').reset_index(drop=True)
+        
+        # 如果数据太多，只取最近的部分
+        if len(crypto_data) > days:
+            crypto_data = crypto_data.tail(days).reset_index(drop=True)
+        
+        # 转换数值列
+        numeric_cols = ["open", "high", "low", "close", "volume", "amount"]
+        for col in numeric_cols:
+            if col in crypto_data.columns:
+                crypto_data[col] = pd.to_numeric(crypto_data[col], errors="coerce")
+        
+        # 确保有必要的列
+        required_cols = ['open', 'high', 'low', 'close']
+        for col in required_cols:
+            if col not in crypto_data.columns:
+                raise ValueError(f"数据中缺少必要的列: {col}")
+        
+        # 确保有volume和amount列
+        if 'volume' not in crypto_data.columns:
+            crypto_data['volume'] = 0.0
+        if 'amount' not in crypto_data.columns:
+            crypto_data['amount'] = 0.0
+        
+        # 修复缺失的成交额
+        if crypto_data["amount"].isna().all() or (crypto_data["amount"] == 0).all():
+            crypto_data["amount"] = crypto_data["close"] * crypto_data["volume"]
+        
+        # 填充任何剩余的NaN值
+        crypto_data = crypto_data.ffill().bfill()
+        
+        # 选择需要的列
+        result_df = crypto_data[['timestamps', 'open', 'high', 'low', 'close', 'volume', 'amount']].copy()
+        
+        # 确保数据类型正确
+        for col in ['open', 'high', 'low', 'close', 'volume', 'amount']:
+            result_df[col] = pd.to_numeric(result_df[col], errors='coerce')
+        
+        print(f"✅ 成功获取 {len(result_df)} 条数据")
+        print(f"数据范围: {result_df['timestamps'].min()} 至 {result_df['timestamps'].max()}")
+        return result_df
+        
+    except Exception as e:
+        print(f"获取比特币数据时发生错误: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 
 def get_stock_data_from_akshare(symbol, period="daily", days=500):
@@ -280,15 +416,25 @@ def plot_prediction(kline_df, pred_df, lookback):
 def get_user_input():
     """获取用户输入的参数"""
     print("=" * 60)
-    print("Kronos 股票预测系统")
+    print("Kronos 金融数据预测系统")
     print("=" * 60)
     print()
     
-    # 获取股票代码
-    symbol = input("请输入股票代码（例如：000001, 600977）: ").strip()
-    if not symbol:
-        symbol = "600977"  # 默认值
-        print(f"使用默认股票代码: {symbol}")
+    # 选择数据源类型
+    data_source = input("请选择数据源（1=股票, 2=比特币，默认1）: ").strip()
+    if not data_source:
+        data_source = "1"
+    
+    if data_source == "2":
+        # 比特币数据
+        symbol = "BTC"
+        print("已选择比特币 (BTC/USDT) 数据")
+    else:
+        # 股票数据
+        symbol = input("请输入股票代码（例如：000001, 600977）: ").strip()
+        if not symbol:
+            symbol = "600977"  # 默认值
+            print(f"使用默认股票代码: {symbol}")
     
     # 获取历史数据长度
     while True:
@@ -338,7 +484,9 @@ def get_user_input():
     print()
     print("=" * 60)
     print("参数确认:")
-    print(f"  股票代码: {symbol}")
+    print(f"  数据源: {'比特币 (BTC/USDT)' if symbol == 'BTC' else '股票'}")
+    if symbol != "BTC":
+        print(f"  股票代码: {symbol}")
     print(f"  历史数据长度: {lookback}")
     print(f"  预测长度: {pred_len}")
     print(f"  数据周期: {period}")
@@ -355,8 +503,11 @@ def main():
         # 获取用户输入
         symbol, lookback, pred_len, period, device, days = get_user_input()
         
-        # 1. 获取股票数据
-        df = get_stock_data_from_akshare(symbol, period=period, days=days)
+        # 1. 获取数据
+        if symbol == "BTC":
+            df = get_bitcoin_data(period=period, days=days)
+        else:
+            df = get_stock_data_from_akshare(symbol, period=period, days=days)
         
         # 检查数据是否足够
         if len(df) < lookback + pred_len:
