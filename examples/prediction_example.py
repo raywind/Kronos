@@ -415,13 +415,16 @@ def plot_prediction(kline_df, pred_df, lookback):
 
 def get_user_input():
     """获取用户输入的参数"""
-    print("=" * 60)
-    print("Kronos 金融数据预测系统")
-    print("=" * 60)
+    print("=" * 70)
+    print("Kronos 金融数据预测系统 (支持akshare+yfinance数据源)")
+    print("=" * 70)
+    print("数据源说明:")
+    print("  akshare: A股、港股、美股、期货等，支持1/5/15/30/60分钟、日线数据")
+    print("  yfinance: 美股、加密货币等，支持多种时间频率")
     print()
-    
+
     # 选择数据源类型
-    data_source = input("请选择数据源（1=股票, 2=比特币，默认1）: ").strip()
+    data_source = input("请选择数据源（1=股票[akshare], 2=比特币[yfinance]，默认1）: ").strip()
     if not data_source:
         data_source = "1"
     
@@ -435,41 +438,86 @@ def get_user_input():
         if not symbol:
             symbol = "600977"  # 默认值
             print(f"使用默认股票代码: {symbol}")
-    
-    # 获取历史数据长度
+
+    # 获取数据周期 (akshare/yfinance支持的频率)
+    period_input = input("请输入数据周期（daily=日线, 1/5/15/30/60=分钟线，默认daily）: ").strip().lower()
+    if not period_input:
+        period = "daily"
+    elif period_input == "daily":
+        period = "daily"
+    elif period_input in ["1", "5", "15", "30", "60"]:
+        period = period_input
+        if period_input == "1":
+            print("注意：1分钟数据需要大量历史数据，建议lookback至少200")
+        elif period_input in ["5", "15"]:
+            print("注意：高频数据波动较大，建议适当调整预测参数")
+    else:
+        print("无效的周期，使用默认周期: daily")
+        period = "daily"
+
+    # 获取历史数据长度 (根据akshare/yfinance数据源特性调整)
     while True:
         try:
-            lookback_input = input("请输入历史数据长度（用于预测，建议200-512，默认400）: ").strip()
-            lookback = int(lookback_input) if lookback_input else 400
+            if period == "daily":
+                default_lookback = 400
+                prompt = f"请输入历史数据长度（用于预测，日线建议200-1000，默认{default_lookback}）: "
+                max_limit = 2000  # 日线可以支持更多历史数据
+            elif period in ["5", "15"]:
+                default_lookback = 300
+                prompt = f"请输入历史数据长度（用于预测，{period}分钟线建议100-800，默认{default_lookback}）: "
+                max_limit = 1000
+            elif period in ["30", "60"]:
+                default_lookback = 200
+                prompt = f"请输入历史数据长度（用于预测，{period}分钟线建议50-600，默认{default_lookback}）: "
+                max_limit = 800
+            else:
+                default_lookback = 400
+                prompt = f"请输入历史数据长度（用于预测，默认{default_lookback}）: "
+                max_limit = 512
+
+            lookback_input = input(prompt).strip()
+            lookback = int(lookback_input) if lookback_input else default_lookback
+
             if lookback < 50:
                 print("历史数据长度不能小于50，请重新输入")
                 continue
-            if lookback > 512:
-                print("警告：历史数据长度超过512，模型会自动截断")
+            if lookback > max_limit:
+                print(f"警告：历史数据长度超过{max_limit}，模型会自动截断")
             break
         except ValueError:
             print("请输入有效的数字")
     
-    # 获取预测长度
+    # 获取预测长度 (根据akshare/yfinance数据源特性调整)
     while True:
         try:
-            pred_len_input = input("请输入预测长度（预测未来多少个时间点，建议50-200，默认120）: ").strip()
-            pred_len = int(pred_len_input) if pred_len_input else 120
+            if period == "daily":
+                default_pred_len = 120
+                prompt = f"请输入预测长度（预测未来多少个交易日，日线建议30-500，默认{default_pred_len}）: "
+                max_limit = 500
+            elif period in ["5", "15"]:
+                default_pred_len = 100
+                prompt = f"请输入预测长度（预测未来多少个{period}分钟，{period}分钟线建议20-200，默认{default_pred_len}）: "
+                max_limit = 300
+            elif period in ["30", "60"]:
+                default_pred_len = 80
+                prompt = f"请输入预测长度（预测未来多少个{period}分钟，{period}分钟线建议10-150，默认{default_pred_len}）: "
+                max_limit = 200
+            else:
+                default_pred_len = 120
+                prompt = f"请输入预测长度（预测未来多少个时间点，默认{default_pred_len}）: "
+                max_limit = 500
+
+            pred_len_input = input(prompt).strip()
+            pred_len = int(pred_len_input) if pred_len_input else default_pred_len
             if pred_len < 1:
                 print("预测长度必须大于0，请重新输入")
                 continue
+            if pred_len > max_limit:
+                print(f"建议预测长度不超过{max_limit}，但仍继续执行")
             break
         except ValueError:
             print("请输入有效的数字")
-    
-    # 获取数据周期
-    period = input("请输入数据周期（daily=日线, 5=5分钟线，默认daily）: ").strip().lower()
-    if not period:
-        period = "daily"
-    if period not in ["daily", "5", "15", "30", "60"]:
-        print("使用默认周期: daily")
-        period = "daily"
-    
+
     # 获取设备
     device = input("请输入设备（cpu/cuda:0，默认cpu）: ").strip().lower()
     if not device:
@@ -478,20 +526,42 @@ def get_user_input():
         print("使用默认设备: cpu")
         device = "cpu"
     
-    # 计算需要获取的数据天数（至少需要lookback+pred_len，再加一些缓冲）
-    days = max((lookback + pred_len) * 2, 500) if period == "daily" else max((lookback + pred_len) * 2, 30)
+    # 计算需要获取的数据天数（根据akshare/yfinance数据源特性调整）
+    if period == "daily":
+        # 日线数据：A股通常交易日约240天/年，留出足够缓冲
+        days = max((lookback + pred_len) * 2, 1000)  # 至少2年数据
+    elif period in ["5", "15"]:
+        # 5/15分钟线：通常一天4-8小时交易时间，转换为天数
+        trading_hours_per_day = 4  # 假设4小时交易时间
+        data_points_per_day = trading_hours_per_day * 60 / int(period) if period != "daily" else 1
+        days = max(int((lookback + pred_len) / data_points_per_day * 3), 60)  # 至少2个月数据
+    elif period in ["1", "30", "60"]:
+        # 其他分钟线：根据频率计算
+        minutes_per_day = 4 * 60  # 假设4小时交易时间
+        data_points_per_day = minutes_per_day / int(period) if period != "daily" else 1
+        days = max(int((lookback + pred_len) / data_points_per_day * 2), 30)  # 至少1个月数据
+    else:
+        days = max((lookback + pred_len) * 2, 500)  # 默认值
     
     print()
-    print("=" * 60)
-    print("参数确认:")
-    print(f"  数据源: {'比特币 (BTC/USDT)' if symbol == 'BTC' else '股票'}")
+    print("=" * 70)
+    print("参数确认 (基于akshare/yfinance数据源优化):")
+    print(f"  数据源: {'比特币 (yfinance)' if symbol == 'BTC' else '股票 (akshare)'}")
     if symbol != "BTC":
         print(f"  股票代码: {symbol}")
-    print(f"  历史数据长度: {lookback}")
-    print(f"  预测长度: {pred_len}")
-    print(f"  数据周期: {period}")
-    print(f"  设备: {device}")
-    print("=" * 60)
+    print(f"  历史数据长度: {lookback} (用于训练模型)")
+    print(f"  预测长度: {pred_len} (预测未来{period}周期)")
+    print(f"  数据周期: {period} ({'日线' if period == 'daily' else period + '分钟线'})")
+
+    # 显示数据源特性提示
+    if period == "daily":
+        print(f"  数据获取: 约{days}个交易日 (akshare日线数据)")
+    else:
+        print(f"  数据获取: 约{days}个交易日 (akshare分钟线数据)")
+
+    print(f"  计算设备: {device}")
+    print(f"  模型配置: Kronos-small (适合akshare/yfinance数据)")
+    print("=" * 70)
     print()
     
     return symbol, lookback, pred_len, period, device, days
