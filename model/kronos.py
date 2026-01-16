@@ -176,6 +176,91 @@ class KronosTokenizer(nn.Module, PyTorchModelHubMixin):
         z = self.head(z)
         return z
 
+    @classmethod
+    def _from_pretrained(cls, model_id, revision=None, cache_dir=None, force_download=False, proxies=None, resume_download=False, local_files_only=False, token=None, map_location="cpu", strict=True, **model_kwargs):
+        """
+        Custom from_pretrained method to handle both safetensors and pytorch_model.bin formats.
+        """
+        try:
+            # Try to load using safetensors first
+            from safetensors.torch import load_file
+            from huggingface_hub import hf_hub_download
+            import json
+
+            # Download config
+            config_path = hf_hub_download(
+                repo_id=model_id,
+                filename="config.json",
+                revision=revision,
+                cache_dir=cache_dir,
+                force_download=force_download,
+                proxies=proxies,
+                resume_download=resume_download,
+                local_files_only=local_files_only,
+                token=token,
+            )
+
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+
+            # Create tokenizer instance
+            instance = cls(**config)
+
+            # Try to download and load safetensors model
+            try:
+                model_path = hf_hub_download(
+                    repo_id=model_id,
+                    filename="model.safetensors",
+                    revision=revision,
+                    cache_dir=cache_dir,
+                    force_download=force_download,
+                    proxies=proxies,
+                    resume_download=resume_download,
+                    local_files_only=local_files_only,
+                    token=token,
+                )
+                state_dict = load_file(model_path, device=str(map_location))
+                instance.load_state_dict(state_dict, strict=strict)
+                return instance
+            except Exception:
+                # If safetensors fails, try pytorch_model.bin
+                try:
+                    model_path = hf_hub_download(
+                        repo_id=model_id,
+                        filename="pytorch_model.bin",
+                        revision=revision,
+                        cache_dir=cache_dir,
+                        force_download=force_download,
+                        proxies=proxies,
+                        resume_download=resume_download,
+                        local_files_only=local_files_only,
+                        token=token,
+                    )
+                    state_dict = torch.load(model_path, map_location=map_location)
+                    instance.load_state_dict(state_dict, strict=strict)
+                    return instance
+                except Exception:
+                    pass
+
+        except Exception:
+            # Fall back to default PyTorchModelHubMixin behavior
+            pass
+
+        # Use default implementation if custom loading fails
+        return super()._from_pretrained(
+            model_id=model_id,
+            revision=revision,
+            cache_dir=cache_dir,
+            force_download=force_download,
+            proxies=proxies,
+            resume_download=resume_download,
+            local_files_only=local_files_only,
+            token=token,
+            map_location=map_location,
+            strict=strict,
+            **model_kwargs
+        )
+
 
 class Kronos(nn.Module, PyTorchModelHubMixin):
     """
@@ -235,6 +320,91 @@ class Kronos(nn.Module, PyTorchModelHubMixin):
             nn.init.zeros_(module.bias)
         elif isinstance(module, RMSNorm):
             nn.init.ones_(module.weight)
+
+    @classmethod
+    def _from_pretrained(cls, model_id, revision=None, cache_dir=None, force_download=False, proxies=None, resume_download=False, local_files_only=False, token=None, map_location="cpu", strict=True, **model_kwargs):
+        """
+        Custom from_pretrained method to handle both safetensors and pytorch_model.bin formats.
+        """
+        try:
+            # Try to load using safetensors first
+            from safetensors.torch import load_file
+            from huggingface_hub import hf_hub_download
+            import json
+
+            # Download config
+            config_path = hf_hub_download(
+                repo_id=model_id,
+                filename="config.json",
+                revision=revision,
+                cache_dir=cache_dir,
+                force_download=force_download,
+                proxies=proxies,
+                resume_download=resume_download,
+                local_files_only=local_files_only,
+                token=token,
+            )
+
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+
+            # Create model instance
+            instance = cls(**config)
+
+            # Try to download and load safetensors model
+            try:
+                model_path = hf_hub_download(
+                    repo_id=model_id,
+                    filename="model.safetensors",
+                    revision=revision,
+                    cache_dir=cache_dir,
+                    force_download=force_download,
+                    proxies=proxies,
+                    resume_download=resume_download,
+                    local_files_only=local_files_only,
+                    token=token,
+                )
+                state_dict = load_file(model_path, device=str(map_location))
+                instance.load_state_dict(state_dict, strict=strict)
+                return instance
+            except Exception:
+                # If safetensors fails, try pytorch_model.bin
+                try:
+                    model_path = hf_hub_download(
+                        repo_id=model_id,
+                        filename="pytorch_model.bin",
+                        revision=revision,
+                        cache_dir=cache_dir,
+                        force_download=force_download,
+                        proxies=proxies,
+                        resume_download=resume_download,
+                        local_files_only=local_files_only,
+                        token=token,
+                    )
+                    state_dict = torch.load(model_path, map_location=map_location)
+                    instance.load_state_dict(state_dict, strict=strict)
+                    return instance
+                except Exception:
+                    pass
+
+        except Exception:
+            # Fall back to default PyTorchModelHubMixin behavior
+            pass
+
+        # Use default implementation if custom loading fails
+        return super()._from_pretrained(
+            model_id=model_id,
+            revision=revision,
+            cache_dir=cache_dir,
+            force_download=force_download,
+            proxies=proxies,
+            resume_download=resume_download,
+            local_files_only=local_files_only,
+            token=token,
+            map_location=map_location,
+            strict=strict,
+            **model_kwargs
+        )
 
     def forward(self, s1_ids, s2_ids, stamp=None, padding_mask=None, use_teacher_forcing=False, s1_targets=None):
         """

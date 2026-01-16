@@ -560,7 +560,7 @@ def get_user_input():
         print(f"  数据获取: 约{days}个交易日 (akshare分钟线数据)")
 
     print(f"  计算设备: {device}")
-    print(f"  模型配置: Kronos-small (适合akshare/yfinance数据)")
+    print(f"  模型配置: Kronos-base (适合akshare/yfinance数据)")
     print("=" * 70)
     print()
     
@@ -590,7 +590,7 @@ def main():
         # 2. 加载模型和分词器
         print("\n正在加载模型...")
         tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
-        model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
+        model = Kronos.from_pretrained("NeoQuasar/Kronos-base")
         print("模型加载完成")
         
         # 3. 实例化预测器

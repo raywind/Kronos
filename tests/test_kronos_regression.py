@@ -60,7 +60,7 @@ def test_kronos_predictor_regression(context_len):
     expected = expected_df[FEATURE_NAMES].values.astype(np.float32)
 
     tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base", revision=TOKENIZER_REVISION)
-    model = Kronos.from_pretrained("NeoQuasar/Kronos-small", revision=MODEL_REVISION)
+    model = Kronos.from_pretrained("NeoQuasar/Kronos-base", revision=MODEL_REVISION)
     tokenizer.eval()
     model.eval()
 
@@ -96,7 +96,7 @@ def test_kronos_predictor_mse(context_len, expected_mse):
         raise ValueError("Example data does not contain enough rows for the random sample regression test.")
 
     tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base", revision=TOKENIZER_REVISION)
-    model = Kronos.from_pretrained("NeoQuasar/Kronos-small", revision=MODEL_REVISION)
+    model = Kronos.from_pretrained("NeoQuasar/Kronos-base", revision=MODEL_REVISION)
     tokenizer.eval()
     model.eval()
 

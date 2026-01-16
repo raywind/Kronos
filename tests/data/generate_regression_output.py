@@ -45,7 +45,7 @@ def generate_output(ctx_len: int) -> None:
     ].reset_index(drop=True)
 
     tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base", revision=TOKENIZER_REVISION)
-    model = Kronos.from_pretrained("NeoQuasar/Kronos-small", revision=MODEL_REVISION)
+    model = Kronos.from_pretrained("NeoQuasar/Kronos-base", revision=MODEL_REVISION)
     tokenizer.eval()
     model.eval()
 

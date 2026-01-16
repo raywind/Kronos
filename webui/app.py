@@ -40,8 +40,8 @@ AVAILABLE_MODELS = {
         'description': 'Lightweight model, suitable for fast prediction'
     },
     'kronos-small': {
-        'name': 'Kronos-small',
-        'model_id': 'NeoQuasar/Kronos-small',
+        'name': 'Kronos-base',
+        'model_id': 'NeoQuasar/Kronos-base',
         'tokenizer_id': 'NeoQuasar/Kronos-Tokenizer-base',
         'context_length': 512,
         'params': '24.7M',
