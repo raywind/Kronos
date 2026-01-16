@@ -4,12 +4,329 @@ import sys
 import akshare as ak
 import yfinance as yf
 from datetime import datetime, timedelta
+import time
+import random
 sys.path.append("../")
 from model import Kronos, KronosTokenizer, KronosPredictor
+
+# 导入 yfinance 的异常类
+try:
+    from yfinance.exceptions import YFRateLimitError, YFException
+except ImportError:
+    # 兼容旧版本的 yfinance
+    YFRateLimitError = Exception
+    YFException = Exception
 
 # 设置 matplotlib 支持中文显示
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']  # 用来正常显示中文标签
 plt.rcParams['axes.unicode_minus'] = False  # 用来正常显示负号
+
+
+def get_yfinance_data_batch(symbol, start_date, end_date, period="daily", max_retries=3):
+    """
+    分批获取 yfinance 数据，避免单次请求过大导致的速率限制
+
+    参数:
+        symbol: 股票代码，如 "GC=F", "BTC-USD"
+        start_date: 开始日期
+        end_date: 结束日期
+        period: 数据周期
+        max_retries: 最大重试次数
+
+    返回:
+        合并后的DataFrame
+    """
+    import time
+
+    # 计算时间跨度
+    total_days = (end_date - start_date).days
+
+    # 如果时间跨度不大，直接获取
+    if total_days <= 180:  # 半年以内直接获取
+        return _get_single_batch(symbol, start_date, end_date, period, max_retries)
+
+    # 分批获取，每批最多半年数据，避免触发速率限制
+    all_data = []
+    current_start = start_date
+    batch_count = 0
+
+    while current_start < end_date:
+        batch_count += 1
+        batch_end = min(current_start + timedelta(days=180), end_date)  # 每批6个月
+        batch_days = (batch_end - current_start).days
+
+        print(f"正在获取批次 {batch_count}: {current_start.strftime('%Y-%m-%d')} 至 {batch_end.strftime('%Y-%m-%d')} ({batch_days}天)...")
+
+        batch_data = _get_single_batch(symbol, current_start, batch_end, period, max_retries)
+        if batch_data is not None and not batch_data.empty:
+            all_data.append(batch_data)
+            print(f"✓ 批次 {batch_count} 获取成功: {len(batch_data)} 条记录")
+        else:
+            print(f"⚠️ 批次 {batch_count} 获取失败，跳过此批次")
+
+        # 移动到下一批，并增加较长延迟避免速率限制
+        current_start = batch_end + timedelta(days=1)
+        if current_start < end_date:
+            # 批次间暂停5-10秒，避免连续请求
+            batch_delay = random.uniform(5, 10)
+            print(f"等待 {batch_delay:.1f} 秒后继续下一批次...")
+            time.sleep(batch_delay)
+
+    if not all_data:
+        raise ValueError(f"未能获取到 {symbol} 的任何数据")
+
+    # 合并所有批次数据
+    combined_data = pd.concat(all_data, ignore_index=False)
+    combined_data = combined_data.sort_index()  # 按时间排序
+    combined_data = combined_data[~combined_data.index.duplicated(keep='first')]  # 去重
+
+    return combined_data
+
+
+def _get_single_batch(symbol, start_date, end_date, period, max_retries):
+    """获取单批次数据，增强版速率限制处理"""
+    for attempt in range(1, max_retries + 1):
+        try:
+            # 在每次尝试前增加基础延迟
+            base_delay = 2.0
+            time.sleep(base_delay)
+
+            ticker = yf.Ticker(symbol)
+
+            if period == "daily":
+                data = ticker.history(start=start_date, end=end_date, interval="1d")
+            else:
+                minutes = int(period)
+                if minutes >= 60:
+                    interval = f"{minutes//60}h"
+                else:
+                    interval = f"{minutes}m"
+                data = ticker.history(start=start_date, end=end_date, interval=interval)
+
+            if data is not None and not data.empty:
+                return data
+
+        except YFRateLimitError as e:
+            # 指数退避 + 随机抖动
+            base_wait = 60
+            exponential_wait = base_wait * (2 ** (attempt - 1))
+            jitter = random.uniform(0.5, 1.5)
+            wait_time = min(exponential_wait * jitter, 600)  # 最大10分钟
+
+            print(f"⚠️  Yahoo Finance 速率限制 (尝试 {attempt}/{max_retries})")
+            print(f"   等待 {wait_time:.1f} 秒后重试...")
+            print("   提示: Yahoo Finance API 限制很严格，建议使用代理或稍后再试")
+
+            if attempt < max_retries:
+                time.sleep(wait_time)
+            else:
+                print("\n🔄 建议解决方案:")
+                print("   1. 等待 30-60 分钟后重试")
+                print("   2. 使用 VPN 或代理 IP")
+                print("   3. 减少数据请求量 (缩短时间范围)")
+                print("   4. 考虑使用其他数据源 (如 Alpha Vantage, IEX Cloud)")
+                raise Exception(f"Yahoo Finance 速率限制已达最大重试次数: {e}")
+        except YFException as e:
+            print(f"[警告] yfinance 错误 (尝试 {attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                time.sleep(3.0)
+            else:
+                raise
+        except Exception as e:
+            print(f"[警告] 网络错误 (尝试 {attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                time.sleep(2.0)
+            else:
+                raise
+
+    return None
+
+
+def get_crypto_data_alternative(symbol="BTC", days=500, period="daily"):
+    """
+    备用的加密货币数据获取方法，当 yfinance 受限时使用
+
+    参数:
+        symbol: 加密货币符号 ("BTC", "ETH", etc.)
+        days: 获取最近多少天的数据
+        period: 数据周期
+
+    返回:
+        DataFrame 或 None (如果无法获取)
+    """
+    print("正在尝试备用的数据获取方法...")
+
+    try:
+        # 方法1: 尝试使用更小的批次和更长的延迟
+        print("方法1: 使用更保守的获取策略...")
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+
+        # 使用更小的批次 (3个月) 和更长的延迟
+        all_data = []
+        current_start = start_date
+
+        while current_start < end_date:
+            batch_end = min(current_start + timedelta(days=90), end_date)
+
+            for attempt in range(1, 6):  # 最多尝试6次
+                try:
+                    print(f"获取 {current_start.strftime('%Y-%m-%d')} 至 {batch_end.strftime('%Y-%m-%d')} (尝试 {attempt}/6)...")
+                    ticker = yf.Ticker(f"{symbol}-USD")
+                    data = ticker.history(start=current_start, end=batch_end, interval="1d")
+
+                    if data is not None and not data.empty:
+                        all_data.append(data)
+                        print(f"✓ 获取成功: {len(data)} 条记录")
+                        break
+
+                except Exception as e:
+                    print(f"⚠️ 尝试 {attempt} 失败: {e}")
+                    if attempt < 6:
+                        wait_time = 30 + attempt * 10  # 逐渐增加等待时间
+                        print(f"等待 {wait_time} 秒...")
+                        time.sleep(wait_time)
+                    else:
+                        print("此批次获取失败，跳过")
+
+            current_start = batch_end + timedelta(days=1)
+            if current_start < end_date:
+                time.sleep(random.uniform(10, 15))  # 批次间更长延迟
+
+        if all_data:
+            combined = pd.concat(all_data, ignore_index=False)
+            combined = combined.sort_index()
+            combined = combined[~combined.index.duplicated(keep='first')]
+            return combined
+
+    except Exception as e:
+        print(f"备用方法1失败: {e}")
+
+    # 方法2: 建议用户使用代理或其他解决方案
+    print("\n🔄 建议解决方案:")
+    print("   1. 使用 VPN 或代理服务器")
+    print("   2. 等待 1-2 小时后重试")
+    print("   3. 使用更短的时间范围 (减少 'days' 参数)")
+    print("   4. 考虑使用其他数据源:")
+    print("      - Alpha Vantage API")
+    print("      - CoinGecko API")
+    print("      - Binance API")
+    print("      - IEX Cloud API")
+
+    return None
+
+
+def get_gold_data(period="daily", days=500):
+    """
+    使用yfinance获取黄金数据
+
+    参数:
+        period: 数据周期，"daily" 表示日线
+        days: 获取最近多少天的数据
+
+    返回:
+        处理后的DataFrame，包含 open, high, low, close, volume, amount, timestamps 列
+    """
+    import time
+
+    try:
+        print(f"正在获取黄金 (GC=F) 的数据...")
+
+        # 计算日期范围
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+        print(f"日期范围: {start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')}")
+
+        # 使用分批获取机制获取黄金数据
+        gold_data = get_yfinance_data_batch("GC=F", start_date, end_date, period, max_retries=3)
+
+        # 如果主要方法失败，尝试备用方法
+        if gold_data is None or gold_data.empty:
+            print("主要获取方法失败，尝试备用方法...")
+            gold_data = get_crypto_data_alternative("GC=F", days, period)
+
+        if gold_data is None or gold_data.empty:
+            raise ValueError("所有获取方法都失败了。请尝试：1) 使用代理/VPN 2) 等待一段时间后重试 3) 减少数据量")
+
+        # yfinance返回的数据列名是英文的，索引是DatetimeIndex
+        # 将索引转换为timestamps列
+        gold_data = gold_data.reset_index()
+        # yfinance返回的索引列名可能是 'Date' 或其他
+        if 'Date' in gold_data.columns:
+            gold_data['timestamps'] = gold_data['Date']
+        elif 'Datetime' in gold_data.columns:
+            gold_data['timestamps'] = gold_data['Datetime']
+        else:
+            # 如果没有找到日期列，使用索引
+            gold_data['timestamps'] = gold_data.index
+
+        # 处理时间戳并转换为UTC时间
+        gold_data['timestamps'] = pd.to_datetime(gold_data['timestamps'])
+        # yfinance返回的时间戳通常没有时区信息，假设是UTC时间
+        if gold_data['timestamps'].dt.tz is None:
+            gold_data['timestamps'] = gold_data['timestamps'].dt.tz_localize('UTC')
+        else:
+            gold_data['timestamps'] = gold_data['timestamps'].dt.tz_convert('UTC')
+
+        # yfinance的列名已经是英文：Open, High, Low, Close, Volume
+        # 转换为小写
+        column_mapping = {
+            'Open': 'open',
+            'High': 'high',
+            'Low': 'low',
+            'Close': 'close',
+            'Volume': 'volume'
+        }
+        gold_data = gold_data.rename(columns=column_mapping)
+
+        # 按时间排序
+        gold_data = gold_data.sort_values('timestamps').reset_index(drop=True)
+
+        # 如果数据太多，只取最近的部分
+        if len(gold_data) > days:
+            gold_data = gold_data.tail(days).reset_index(drop=True)
+
+        # 转换数值列
+        numeric_cols = ["open", "high", "low", "close", "volume", "amount"]
+        for col in numeric_cols:
+            if col in gold_data.columns:
+                gold_data[col] = pd.to_numeric(gold_data[col], errors="coerce")
+
+        # 确保有必要的列
+        required_cols = ['open', 'high', 'low', 'close']
+        for col in required_cols:
+            if col not in gold_data.columns:
+                raise ValueError(f"数据中缺少必要的列: {col}")
+
+        # 确保有volume和amount列
+        if 'volume' not in gold_data.columns:
+            gold_data['volume'] = 0.0
+        if 'amount' not in gold_data.columns:
+            gold_data['amount'] = 0.0
+
+        # 修复缺失的成交额
+        if gold_data["amount"].isna().all() or (gold_data["amount"] == 0).all():
+            gold_data["amount"] = gold_data["close"] * gold_data["volume"]
+
+        # 填充任何剩余的NaN值
+        gold_data = gold_data.ffill().bfill()
+
+        # 选择需要的列
+        result_df = gold_data[['timestamps', 'open', 'high', 'low', 'close', 'volume', 'amount']].copy()
+
+        # 确保数据类型正确
+        for col in ['open', 'high', 'low', 'close', 'volume', 'amount']:
+            result_df[col] = pd.to_numeric(result_df[col], errors='coerce')
+
+        print(f"✅ 成功获取 {len(result_df)} 条数据")
+        print(f"数据范围: {result_df['timestamps'].min()} 至 {result_df['timestamps'].max()}")
+        return result_df
+
+    except Exception as e:
+        print(f"获取黄金数据时发生错误: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 
 def get_bitcoin_data(period="daily", days=500):
@@ -33,38 +350,16 @@ def get_bitcoin_data(period="daily", days=500):
         start_date = end_date - timedelta(days=days)
         print(f"日期范围: {start_date.strftime('%Y-%m-%d')} 至 {end_date.strftime('%Y-%m-%d')}")
         
-        # 使用yfinance获取比特币数据（带重试机制）
-        max_retries = 3
-        crypto_data = None
-        
-        for attempt in range(1, max_retries + 1):
-            try:
-                # yfinance获取比特币数据，使用BTC-USD交易对
-                ticker = yf.Ticker("BTC-USD")
-                
-                if period == "daily":
-                    # 获取日线数据
-                    crypto_data = ticker.history(start=start_date, end=end_date, interval="1d")
-                else:
-                    # 分钟级数据
-                    minutes = int(period)
-                    if minutes >= 60:
-                        interval = f"{minutes//60}h"
-                    else:
-                        interval = f"{minutes}m"
-                    crypto_data = ticker.history(start=start_date, end=end_date, interval=interval)
-                
-                if crypto_data is not None and not crypto_data.empty:
-                    break
-            except Exception as e:
-                print(f"⚠️ 尝试 {attempt}/{max_retries} 失败: {e}")
-                if attempt < max_retries:
-                    time.sleep(1.5)
-                else:
-                    raise
-        
+        # 使用分批获取机制获取比特币数据
+        crypto_data = get_yfinance_data_batch("BTC-USD", start_date, end_date, period, max_retries=3)
+
+        # 如果主要方法失败，尝试备用方法
         if crypto_data is None or crypto_data.empty:
-            raise ValueError("未能获取到比特币数据，请检查网络连接。")
+            print("主要获取方法失败，尝试备用方法...")
+            crypto_data = get_crypto_data_alternative("BTC", days, period)
+
+        if crypto_data is None or crypto_data.empty:
+            raise ValueError("所有获取方法都失败了。请尝试：1) 使用代理/VPN 2) 等待一段时间后重试 3) 减少数据量")
         
         # yfinance返回的数据列名是英文的，索引是DatetimeIndex
         # 将索引转换为timestamps列
@@ -191,7 +486,7 @@ def get_stock_data_from_akshare(symbol, period="daily", days=500):
                 if stock_data is not None and not stock_data.empty:
                     break
             except Exception as e:
-                print(f"⚠️ 尝试 {attempt}/{max_retries} 失败: {e}")
+                print(f"[警告] 尝试 {attempt}/{max_retries} 失败: {e}")
                 if attempt < max_retries:
                     time.sleep(1.5)
                 else:
@@ -252,7 +547,7 @@ def get_stock_data_from_akshare(symbol, period="daily", days=500):
         # 修复无效的开盘价
         open_bad = (stock_data["open"] == 0) | (stock_data["open"].isna())
         if open_bad.any():
-            print(f"⚠️  修复了 {open_bad.sum()} 个无效的开盘价")
+            print(f"[信息] 修复了 {open_bad.sum()} 个无效的开盘价")
             stock_data.loc[open_bad, "open"] = stock_data["close"].shift(1)
             stock_data["open"].fillna(stock_data["close"], inplace=True)
         
@@ -424,14 +719,18 @@ def get_user_input():
     print()
 
     # 选择数据源类型
-    data_source = input("请选择数据源（1=股票[akshare], 2=比特币[yfinance]，默认1）: ").strip()
+    data_source = input("请选择数据源（1=股票[akshare], 2=比特币[yfinance], 3=黄金[yfinance]，默认1）: ").strip()
     if not data_source:
         data_source = "1"
-    
+
     if data_source == "2":
         # 比特币数据
         symbol = "BTC"
         print("已选择比特币 (BTC/USDT) 数据")
+    elif data_source == "3":
+        # 黄金数据
+        symbol = "GOLD"
+        print("已选择黄金 (GC=F) 数据")
     else:
         # 股票数据
         symbol = input("请输入股票代码（例如：000001, 600977）: ").strip()
@@ -546,18 +845,27 @@ def get_user_input():
     print()
     print("=" * 70)
     print("参数确认 (基于akshare/yfinance数据源优化):")
-    print(f"  数据源: {'比特币 (yfinance)' if symbol == 'BTC' else '股票 (akshare)'}")
-    if symbol != "BTC":
+    if symbol == "BTC":
+        print(f"  数据源: 比特币 (yfinance)")
+    elif symbol == "GOLD":
+        print(f"  数据源: 黄金 (yfinance)")
+    else:
+        print(f"  数据源: 股票 (akshare)")
         print(f"  股票代码: {symbol}")
     print(f"  历史数据长度: {lookback} (用于训练模型)")
     print(f"  预测长度: {pred_len} (预测未来{period}周期)")
     print(f"  数据周期: {period} ({'日线' if period == 'daily' else period + '分钟线'})")
 
     # 显示数据源特性提示
-    if period == "daily":
-        print(f"  数据获取: 约{days}个交易日 (akshare日线数据)")
+    if symbol in ["BTC", "GOLD"]:
+        data_source_name = "yfinance"
     else:
-        print(f"  数据获取: 约{days}个交易日 (akshare分钟线数据)")
+        data_source_name = "akshare"
+
+    if period == "daily":
+        print(f"  数据获取: 约{days}个交易日 ({data_source_name}日线数据)")
+    else:
+        print(f"  数据获取: 约{days}个交易日 ({data_source_name}分钟线数据)")
 
     print(f"  计算设备: {device}")
     print(f"  模型配置: Kronos-base (适合akshare/yfinance数据)")
@@ -576,6 +884,8 @@ def main():
         # 1. 获取数据
         if symbol == "BTC":
             df = get_bitcoin_data(period=period, days=days)
+        elif symbol == "GOLD":
+            df = get_gold_data(period=period, days=days)
         else:
             df = get_stock_data_from_akshare(symbol, period=period, days=days)
         
@@ -680,5 +990,62 @@ def main():
         traceback.print_exc()
 
 
+def test_gold_data():
+    """测试黄金数据获取功能"""
+    try:
+        print("测试黄金数据获取...")
+        df = get_gold_data(period="daily", days=30)
+        print(f"✅ 黄金数据获取成功，共 {len(df)} 条记录")
+        print("数据预览:")
+        print(df.head())
+        return True
+    except Exception as e:
+        print(f"❌ 黄金数据获取失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def test_rate_limit_handling():
+    """测试改进的速率限制处理"""
+    print("🧪 测试改进的 Yahoo Finance 速率限制处理...")
+    print("=" * 60)
+
+    try:
+        print("正在测试比特币数据获取 (短时间范围)...")
+        df = get_bitcoin_data(period="daily", days=30)
+        print(f"✅ 比特币数据获取成功，共 {len(df)} 条记录")
+    except Exception as e:
+        print(f"⚠️ 比特币数据获取失败: {e}")
+
+    print("\n" + "=" * 60)
+
+    try:
+        print("正在测试黄金数据获取 (短时间范围)...")
+        df = get_gold_data(period="daily", days=30)
+        print(f"✅ 黄金数据获取成功，共 {len(df)} 条记录")
+    except Exception as e:
+        print(f"⚠️ 黄金数据获取失败: {e}")
+
+    print("\n" + "=" * 60)
+    print("💡 如果测试失败，建议:")
+    print("   1. 使用 VPN 或代理服务器")
+    print("   2. 等待 30-60 分钟后重试")
+    print("   3. 运行时使用更短的时间范围")
+    print("   4. 考虑使用其他数据源 API")
+
+
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--test-gold":
+            test_gold_data()
+        elif sys.argv[1] == "--test-rate-limit":
+            test_rate_limit_handling()
+        else:
+            print("可用测试命令:")
+            print("  --test-gold        测试黄金数据获取")
+            print("  --test-rate-limit  测试改进的速率限制处理")
+            print("  (无参数)           运行主程序")
+    else:
+        main()
